@@ -4,7 +4,14 @@ const  express = require('express')
 const bodyParser = require('body-parser');
 const ejs = require('ejs');
 const mongoose = require('mongoose')
-const encrypt = require('mongoose-encryption') //encryting password
+const session = require('express-session');
+const passport = require('passport');
+const passportLocalMongoose = require('passport-local-mongoose')
+
+//google Auth
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const findOrCreate = require('mongoose-findorcreate');
+const e = require('express');
 
 const app = express()
 
@@ -13,77 +20,176 @@ app.use(express.static('public'));
 app.set('view engine', 'ejs');
 app.use(bodyParser.urlencoded({extended: true}))
 
+let currentUrl = '';
+
+app.use(session({
+    secret: "The Secret",
+    resave: false,
+    saveUninitialized: false
+}))
+
+app.use(passport.initialize());
+app.use(passport.session()) //Setup session
+
 
 mongoose.connect('mongodb://localhost:27017/userDB', {useNewUrlParser: true , useUnifiedTopology: true  })
-
+mongoose.set('useCreateIndex', true)//fixed  collection.ensureIndex is deprecated. Use createIndexes instead.
 
 const userSchema = new mongoose.Schema({
     email: String,
-    password: String
+    password: String,
+    googleId: String //saving googleID
 });
 
-userSchema.plugin(encrypt, {secret: process.env.SECRET, encryptedFields:['password'] })  // add the plugin before mongoose model
+userSchema.plugin(passportLocalMongoose);
+//Google plugin
+userSchema.plugin(findOrCreate)
 
-
+//userSchema.plugin(encrypt, {secret: process.env.SECRET, encryptedFields:['password'] })  // add the plugin before mongoose model
 const User = new mongoose.model("User", userSchema);
+
+// CHANGE: USE "createStrategy" INSTEAD OF "authenticate"
+passport.use(User.createStrategy());
+
+// use static serialize and deserialize of model for passport session support
+passport.serializeUser(function(user, done){
+    done(null, user.id)
+});
+passport.deserializeUser(function(id, done){
+    User.findById(id, function(err, user){
+        done(err, user)
+    })
+})
+
+//Google Auth Here 
+passport.use(new GoogleStrategy({
+    clientID: process.env.CLIENT_ID,
+    clientSecret: process.env.CLIENT_SECRET,
+    callbackURL: "http://localhost:3000/auth/google/secrets", //Re-direct if user is authenticate succesfully
+    userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo", // Authenticate user
+    
+},
+  function(accessToken, refreshToken, profile, cb) {
+    console.log(profile)
+    User.findOrCreate({ googleId: profile.id }, function (err, user) {
+      return cb(err, user);
+    });
+  }
+));
+//Google Auth END Here 
 
 
 //Index
 app.get('/', (req, res)=>{
-    res.render('home')
+   
+    if(req.isAuthenticated){
+        res.redirect('/secrets')
+    }else{
+        res.render('home')
+    }
 })
+
+//Google Login
+app.get('/auth/google',
+    passport.authenticate('google', { 
+      scope: ['profile'] 
+}))
+
+app.get('/auth/google/secrets', 
+  passport.authenticate('google', { failureRedirect: '/login' }),
+  function(req, res) {
+    // Successful authentication, redirect home.
+    res.redirect('/secrets');
+});
+//Google Login END Here
+
 
 
 //Login Page
 app.get('/login', (req, res)=>{
-    res.render('login')
+    if(req.isAuthenticated()){
+        var fullUrl = req.protocol + '://' + req.get('host');
+        res.redirect('/secrets')
+        console.log(fullUrl)
+        
+    }else{
+        console.log("mali")
+        res.render('login')
+    }
+    //2343
 })
 
 app.post('/login', (req, res)=>{
-    const username = req.body.username;
-    const password = req.body.password;
+    const user  = new User({
+        username: req.body.username,
+        password: req.body.password
+    });
 
-    User.findOne({email: username}, function(err, foundUser){
+    req.login(user, function(err){
         if(err){
             console.log(err)
         }else{
-            if(foundUser){ // if the user is true
-                if(foundUser.password === password){ // checking current user if the password entered is equal to the existing user
-                    res.render('secrets')
-                }else{  
-                    console.log("Auth failed")
-                }
-            }
+            passport.authenticate("local")(req, res, function(){
+                res.redirect("secrets")
+                console.log("Authentication Success")
+            })
         }
     })
+
 })
 
 
 //Registration Page
 app.get('/register', (req, res)=>{
-    res.render('register')
-})
+    if(req.isAuthenticated()){ //check if the user is authenticated and it will redirect to the home page
+        res.redirect('/secrets')
+    }else{
+        res.render('register')
+    }
+});
+
 
 app.post('/register', (req, res) =>{
-    const username = req.body.username;
-    const password = req.body.password
-
-    const newUser = User({
-        email: username,
-        password: password
-    })
-
-    newUser.save(function(err){
+    User.register({username: req.body.username}, req.body.password, function(err, user){
         if(err){
             console.log(err)
+            res.redirect('/register')
         }else{
-            console.log("Success")
-            res.render('secrets')
+            passport.authenticate("local")(req, res, function(){
+                res.redirect("secrets")
+                console.log("Sucess")
+            });
         }
-    })
+    });
+});
+
+app.get('/secrets', (req, res)=>{
+    if(req.isAuthenticated()){ //check if users is authenticated
+        res.render("secrets");
+    }else{
+        res.render('home')
+        console.log("Not Authenticated")
+    }
+
 })
 
+app.get('/logout', (req, res)=>{
+    req.logout();
+    res.redirect("/")
+})
 
+//Hanle Error 404
+app.use(function(req, res, next) {
+   if(req.isAuthenticated){
+        req.statusCode = 404;
+        res.redirect('/secrets')
+       
+        
+   }else{
+    req.statusCode = 404;
+    res.redirect('/')
+   }
+});
 
 
 

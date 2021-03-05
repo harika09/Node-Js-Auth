@@ -38,7 +38,8 @@ mongoose.set('useCreateIndex', true)//fixed  collection.ensureIndex is deprecate
 const userSchema = new mongoose.Schema({
     email: String,
     password: String,
-    googleId: String //saving googleID
+    googleId: String, //saving googleID
+    secret: String
 });
 
 userSchema.plugin(passportLocalMongoose);
@@ -70,7 +71,7 @@ passport.use(new GoogleStrategy({
     
 },
   function(accessToken, refreshToken, profile, cb) {
-    console.log(profile)
+    //console.log(profile)
     User.findOrCreate({ googleId: profile.id }, function (err, user) {
       return cb(err, user);
     });
@@ -108,10 +109,8 @@ app.get('/auth/google/secrets',
 //Login Page
 app.get('/login', (req, res)=>{
     if(req.isAuthenticated()){
-        var fullUrl = req.protocol + '://' + req.get('host');
         res.redirect('/secrets')
-        console.log(fullUrl)
-        
+   
     }else{
         console.log("mali")
         res.render('login')
@@ -164,14 +163,57 @@ app.post('/register', (req, res) =>{
 });
 
 app.get('/secrets', (req, res)=>{
-    if(req.isAuthenticated()){ //check if users is authenticated
-        res.render("secrets");
+  if(req.isAuthenticated()){
+    User.find({'secret': {$ne: null}}, function(err, foundUser){
+        if(err){
+            console.log(err)
+        }else{
+            if(foundUser){
+                res.render('secrets', {usersWithSecrets: foundUser})
+            }
+        }
+    })
+  }else{
+      res.render('home')
+  }
+});
+
+
+app.get('/submit', (req, res)=>{
+    if(req.isAuthenticated()){
+        res.render('submit')
     }else{
-        res.render('home')
-        console.log("Not Authenticated")
+        res.redirect('/')
     }
+})
+
+
+app.post('/submit', (req, res)=>{
+    const submitSecret = req.body.secret
+
+   // console.log(req.user.username)
+
+   User.findById(req.user.id, function(err, foundUser){
+       if(err){
+        console.log(err)
+       }else{
+        if(foundUser){
+            foundUser.secret = submitSecret; //input
+            foundUser.save(function(err){
+                if(err){
+                    console.log(" Failed to Submit " + err)
+                }else{
+                    console.log("Saved")
+                    res.redirect("/secrets")
+                }
+            })
+        }
+       }
+   })
+
 
 })
+
 
 app.get('/logout', (req, res)=>{
     req.logout();
